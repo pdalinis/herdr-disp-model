@@ -1,6 +1,6 @@
 # Herdr Model Display
 
-Display the active AI model next to its harness in the Herdr agent sidebar:
+Herdr Model Display is a Herdr plugin that shows the active AI model for Codex CLI, Claude Code, Pi, and Hermes Agent directly in the agent sidebar. Model names update automatically when sessions start or users switch models:
 
 ```text
 codex - gpt-5.6
@@ -8,6 +8,8 @@ claude - claude-opus-5
 pi - claude-sonnet-4-6
 hermes - gpt-5.4
 ```
+
+![Herdr sidebar showing live model names for Codex and Pi](assets/herdr-model-display.png)
 
 The plugin uses harness lifecycle hooks and Herdr's display-only pane metadata. It does not scrape terminal output or take over Herdr's agent lifecycle state.
 
