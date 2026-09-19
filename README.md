@@ -1,24 +1,26 @@
 # Herdr Model Display
 
-Herdr Model Display is a Herdr plugin that shows the active AI model for Codex CLI, Claude Code, Pi, and Hermes Agent directly in the agent sidebar. Model names update automatically when sessions start or users switch models:
+Herdr Model Display is a Herdr plugin that shows the active AI model and reasoning effort for Codex CLI, Claude Code, Pi, and Hermes Agent directly in the agent sidebar. Model names and effort levels update automatically when sessions start or users switch them:
 
 ```text
-codex - gpt-5.6
-claude - claude-opus-5
-pi - claude-sonnet-4-6
-hermes - gpt-5.4
+codex - gpt-5.6 - med
+claude - claude-opus-5 - high
+pi - claude-sonnet-4-6 - xh
+hermes - gpt-5.4 - low
 ```
 
 ![Herdr sidebar showing live model names for Codex and Pi](assets/herdr-model-display.png)
+
+*The green status bars shown beneath the agents come from [Herdr Context Bar](https://github.com/pdalinis/herdr-ctx-bar), a separate plugin.*
 
 The plugin uses harness lifecycle hooks and Herdr's display-only pane metadata. It does not scrape terminal output or take over Herdr's agent lifecycle state.
 
 ## Status
 
-- Codex: automatic session and model updates
-- Claude: automatic session and live model-switch updates
-- Pi: automatic session and live model-switch updates
-- Hermes: automatic per-turn model updates
+- Codex: automatic session, model, and effort updates
+- Claude: automatic session and live model/effort updates
+- Pi: automatic session and live model/effort updates
+- Hermes: automatic per-turn model and effort updates
 - Platforms: macOS and Linux
 - Requirements: Herdr 0.9.0+ and Python 3
 
@@ -31,23 +33,23 @@ herdr plugin action invoke dev.pdalinis.model-display.setup-all
 
 Restart running harness sessions after setup. Pi can instead load its adapter immediately with `/reload`. Codex may ask you to review and trust its newly installed hook before it runs.
 
-Claude model-switch tracking uses `PostModelSwitch`, available in Claude Code 2.1.251 and newer. On older Claude versions, the adapter reports the initial model when `SessionStart` provides it but cannot follow `/model` changes.
+Claude model-switch tracking uses `PostModelSwitch`, available in Claude Code 2.1.251 and newer. On older Claude versions, the adapter reports the current model and effort when the session starts and when the next prompt is submitted, but cannot update immediately after `/model` changes.
 
-The default Herdr sidebar works without additional configuration because the plugin reports a display name such as `codex - gpt-5.6`.
+The default Herdr sidebar works without additional configuration because the plugin reports a display name such as `codex - gpt-5.6 - med`. Effort levels are shortened to `off`, `min`, `low`, `med`, `high`, `xh`, `max`, or `ult`. If a harness does not expose an effort level, the plugin keeps the original `harness - model` format.
 
 ## Custom sidebar layout
 
-The plugin also reports the model as a `$model` token. To control placement yourself, add it after `agent` in `~/.config/herdr/config.toml`:
+The plugin also reports `$model` and `$effort` tokens. To control placement yourself, add them after `agent` in `~/.config/herdr/config.toml`:
 
 ```toml
 [ui.sidebar.agents]
 rows = [
   ["state_icon", "machine", "workspace", "tab"],
-  ["agent", "$model"],
+  ["agent", "$model", "$effort"],
 ]
 ```
 
-Herdr separates tokens with `·`, producing `codex · gpt-5.6`. Reload the configuration with:
+Herdr separates tokens with `·`, producing `codex · gpt-5.6 · med`. Reload the configuration with:
 
 ```sh
 herdr server reload-config
@@ -75,7 +77,8 @@ Unsupported harness adapters can call the dependency-free reporter directly:
 python3 src/model_display.py report \
   --pane "$HERDR_PANE_ID" \
   --harness claude \
-  --model opus
+  --model opus \
+  --effort high
 ```
 
 Clear stale metadata when the harness session ends:
@@ -99,12 +102,12 @@ herdr plugin link "$PWD" --disabled
 
 Each adapter uses its harness's native model signal:
 
-- Codex provides `model` to command hooks.
-- Claude provides `model` at `SessionStart` and `to_model` at `PostModelSwitch`.
-- Pi exposes `ctx.model` and the `model_select` extension event.
-- Hermes provides `model` to its `pre_llm_call` Python plugin hook.
+- Codex provides `model` to command hooks; the adapter resolves the session effort override or the selected model's default.
+- Claude provides model and effort data to its lifecycle hooks.
+- Pi exposes `ctx.model`, `ctx.thinkingLevel`, and live selection events.
+- Hermes provides the effective model request to its `pre_api_request` Python plugin hook.
 
-The adapters call `herdr pane report-metadata` to update the pane's visible agent label and `$model` token without taking over lifecycle state. Setup preserves existing Codex and Claude hooks.
+The adapters call `herdr pane report-metadata` to update the pane's visible agent label plus `$model` and `$effort` tokens without taking over lifecycle state. Setup preserves existing Codex and Claude hooks.
 
 The command-hook adapters are copied into Herdr's stable plugin configuration directory, so GitHub-managed plugin reinstalls do not leave Codex or Claude pointing at a replaced checkout.
 

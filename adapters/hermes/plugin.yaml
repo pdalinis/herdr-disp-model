@@ -1,3 +1,3 @@
 name: herdr-model-display
-version: "0.2.0"
-description: Display the active Hermes model in its Herdr pane
+version: "0.3.0"
+description: Display the active Hermes model and effort in its Herdr pane

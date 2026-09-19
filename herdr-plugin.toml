@@ -1,8 +1,8 @@
 id = "dev.pdalinis.model-display"
 name = "Model Display"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.0"
-description = "Display the active model next to the harness name in Herdr."
+description = "Display the active model and effort next to the harness name in Herdr."
 platforms = ["linux", "macos"]
 
 [[actions]]

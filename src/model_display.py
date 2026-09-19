@@ -17,7 +17,29 @@ from typing import Any
 CODEX_MARKER = "herdr-model-display-codex-hook"
 CODEX_HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
 CLAUDE_MARKER = "herdr-model-display-claude-hook"
-CLAUDE_HOOK_EVENTS = ("SessionStart", "PostModelSwitch", "SessionEnd")
+CLAUDE_HOOK_EVENTS = (
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostModelSwitch",
+    "SessionEnd",
+)
+EFFORT_ABBREVIATIONS = {
+    "none": "off",
+    "off": "off",
+    "minimal": "min",
+    "min": "min",
+    "low": "low",
+    "medium": "med",
+    "med": "med",
+    "high": "high",
+    "xhigh": "xh",
+    "extra-high": "xh",
+    "extra_high": "xh",
+    "max": "max",
+    "ultra": "ult",
+    "auto": "auto",
+    "default": "auto",
+}
 
 
 def compact_model_name(model: str) -> str:
@@ -29,16 +51,108 @@ def compact_model_name(model: str) -> str:
     return value
 
 
+def compact_effort_level(effort: Any) -> str:
+    """Return a short display value for a harness reasoning effort."""
+    if not isinstance(effort, str):
+        return ""
+    value = effort.strip().lower()
+    if not value:
+        return ""
+    return EFFORT_ABBREVIATIONS.get(value, value[:6])
+
+
+def payload_effort(payload: dict[str, Any]) -> str:
+    """Read effort from the common shapes used by harness hook payloads."""
+    for key in ("reasoning_effort", "model_reasoning_effort", "thinking_level"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+    effort = payload.get("effort")
+    if isinstance(effort, str):
+        return effort
+    if isinstance(effort, dict) and isinstance(effort.get("level"), str):
+        return effort["level"]
+
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str):
+        return reasoning["effort"]
+    return ""
+
+
+def codex_transcript_effort(transcript_path: Any) -> str:
+    """Best-effort lookup of the latest per-session Codex effort override."""
+    if not isinstance(transcript_path, str) or not transcript_path.strip():
+        return ""
+    path = Path(transcript_path).expanduser()
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            start = max(0, handle.tell() - 262_144)
+            handle.seek(start)
+            data = handle.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+    for line in reversed(data.splitlines()):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = item.get("payload") if isinstance(item, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        candidates = [payload]
+        thread_settings = payload.get("thread_settings")
+        if isinstance(thread_settings, dict):
+            candidates.append(thread_settings)
+        for candidate in candidates:
+            collaboration = candidate.get("collaboration_mode")
+            if not isinstance(collaboration, dict):
+                continue
+            settings = collaboration.get("settings")
+            if not isinstance(settings, dict) or "reasoning_effort" not in settings:
+                continue
+            value = settings.get("reasoning_effort")
+            return value if isinstance(value, str) else ""
+    return ""
+
+
+def codex_default_effort(model: str) -> str:
+    """Read the selected model's default effort from Codex's local catalog."""
+    path = codex_home() / "models_cache.json"
+    try:
+        with path.open(encoding="utf-8") as handle:
+            catalog = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return ""
+    models = catalog.get("models") if isinstance(catalog, dict) else None
+    if not isinstance(models, list):
+        return ""
+    compact_model = compact_model_name(model)
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug")
+        if isinstance(slug, str) and compact_model_name(slug) == compact_model:
+            value = entry.get("default_reasoning_level")
+            return value if isinstance(value, str) else ""
+    return ""
+
+
 def herdr_command() -> str:
     return os.environ.get("HERDR_BIN_PATH") or shutil.which("herdr") or "herdr"
 
 
-def report_model(pane_id: str, harness: str, model: str) -> int:
+def report_model(pane_id: str, harness: str, model: str, effort: str = "") -> int:
     model = compact_model_name(model)
     if not model:
         return 0
 
+    effort = compact_effort_level(effort)
     label = f"{harness} - {model}"
+    if effort:
+        label += f" - {effort}"
     command = [
         herdr_command(),
         "pane",
@@ -53,6 +167,10 @@ def report_model(pane_id: str, harness: str, model: str) -> int:
         "--token",
         f"model={model}",
     ]
+    if effort:
+        command.extend(["--token", f"effort={effort}"])
+    else:
+        command.extend(["--clear-token", "effort"])
     return subprocess.run(
         command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     ).returncode
@@ -71,6 +189,8 @@ def clear_model(pane_id: str, harness: str) -> int:
         "--clear-display-agent",
         "--clear-token",
         "model",
+        "--clear-token",
+        "effort",
     ]
     return subprocess.run(
         command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
@@ -88,7 +208,14 @@ def codex_hook(payload: dict[str, Any]) -> int:
 
     model = payload.get("model")
     if isinstance(model, str) and model.strip():
-        return report_model(pane_id, "codex", model)
+        effort = payload_effort(payload)
+        if not effort:
+            effort = os.environ.get("CODEX_REASONING_EFFORT", "")
+        if not effort:
+            effort = codex_transcript_effort(payload.get("transcript_path"))
+        if not effort:
+            effort = codex_default_effort(model)
+        return report_model(pane_id, "codex", model, effort)
     return 0
 
 
@@ -105,7 +232,8 @@ def claude_hook(payload: dict[str, Any]) -> int:
         payload.get("to_model") if event == "PostModelSwitch" else payload.get("model")
     )
     if isinstance(model, str) and model.strip():
-        return report_model(pane_id, "claude", model)
+        effort = payload_effort(payload) or os.environ.get("CLAUDE_EFFORT", "")
+        return report_model(pane_id, "claude", model, effort)
     return 0
 
 
@@ -214,7 +342,7 @@ def install_codex() -> int:
                     {
                         "type": "command",
                         "command": command,
-                        "timeout": 5,
+                        "timeout": 3 if event == "SessionEnd" else 5,
                     }
                 ]
             }
@@ -434,6 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--pane", default=os.environ.get("HERDR_PANE_ID"))
     report.add_argument("--harness", required=True)
     report.add_argument("--model", required=True)
+    report.add_argument("--effort", default="")
 
     clear = commands.add_parser(
         "clear", help="Clear a model reported by another adapter"
@@ -474,7 +603,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "report":
         if not args.pane:
             raise SystemExit("--pane or HERDR_PANE_ID is required")
-        return report_model(args.pane, args.harness, args.model)
+        return report_model(args.pane, args.harness, args.model, args.effort)
     if args.command == "clear":
         if not args.pane:
             raise SystemExit("--pane or HERDR_PANE_ID is required")
