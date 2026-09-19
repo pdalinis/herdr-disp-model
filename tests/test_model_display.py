@@ -68,7 +68,10 @@ class ModelDisplayTests(unittest.TestCase):
                 }
             }
             (codex / "hooks.json").write_text(json.dumps(existing), encoding="utf-8")
-            environment = {"CODEX_HOME": str(codex), "HERDR_PLUGIN_CONFIG_DIR": str(plugin)}
+            environment = {
+                "CODEX_HOME": str(codex),
+                "HERDR_PLUGIN_CONFIG_DIR": str(plugin),
+            }
             with patch.dict(os.environ, environment, clear=True):
                 self.assertEqual(model_display.install_codex(), 0)
             installed = json.loads((codex / "hooks.json").read_text(encoding="utf-8"))
@@ -78,7 +81,9 @@ class ModelDisplayTests(unittest.TestCase):
                 for hook in group["hooks"]
             ]
             self.assertIn("existing-hook", commands)
-            self.assertTrue(any(model_display.MARKER in command for command in commands))
+            self.assertTrue(
+                any(model_display.CODEX_MARKER in command for command in commands)
+            )
 
     def test_install_is_idempotent_and_uninstall_preserves_others(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -91,12 +96,96 @@ class ModelDisplayTests(unittest.TestCase):
                 model_display.install_codex()
                 model_display.install_codex()
                 data = model_display.load_hooks(root / "codex" / "hooks.json")
-                for event in model_display.HOOK_EVENTS:
-                    managed = [g for g in data["hooks"][event] if model_display.is_our_hook(g)]
+                for event in model_display.CODEX_HOOK_EVENTS:
+                    managed = [
+                        g
+                        for g in data["hooks"][event]
+                        if model_display.is_our_hook(g, model_display.CODEX_MARKER)
+                    ]
                     self.assertEqual(len(managed), 1)
                 model_display.uninstall_codex()
                 data = model_display.load_hooks(root / "codex" / "hooks.json")
                 self.assertFalse(any(data["hooks"].values()))
+
+    @patch.object(model_display, "report_model", return_value=0)
+    def test_claude_session_start_reports_model(self, report):
+        payload = {
+            "hook_event_name": "SessionStart",
+            "model": "claude-sonnet-4-6",
+        }
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "1-3"}, clear=True):
+            self.assertEqual(model_display.claude_hook(payload), 0)
+        report.assert_called_once_with("1-3", "claude", "claude-sonnet-4-6")
+
+    @patch.object(model_display, "report_model", return_value=0)
+    def test_claude_model_switch_reports_target(self, report):
+        payload = {
+            "hook_event_name": "PostModelSwitch",
+            "from_model": "claude-sonnet-4-6",
+            "to_model": "claude-opus-5",
+        }
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "1-3"}, clear=True):
+            self.assertEqual(model_display.claude_hook(payload), 0)
+        report.assert_called_once_with("1-3", "claude", "claude-opus-5")
+
+    @patch.object(model_display, "report_model", return_value=0)
+    def test_claude_subagent_does_not_replace_root_model(self, report):
+        payload = {
+            "hook_event_name": "SessionStart",
+            "model": "claude-haiku-4-5",
+            "agent_id": "child-1",
+        }
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "1-3"}, clear=True):
+            self.assertEqual(model_display.claude_hook(payload), 0)
+        report.assert_not_called()
+
+    def test_claude_install_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = {
+                "CLAUDE_CONFIG_DIR": str(root / "claude"),
+                "HERDR_PLUGIN_CONFIG_DIR": str(root / "plugin"),
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                model_display.install_claude()
+                model_display.install_claude()
+                data = model_display.load_hooks(root / "claude" / "settings.json")
+                for event in model_display.CLAUDE_HOOK_EVENTS:
+                    managed = [
+                        g
+                        for g in data["hooks"][event]
+                        if model_display.is_our_hook(g, model_display.CLAUDE_MARKER)
+                    ]
+                    self.assertEqual(len(managed), 1)
+
+    def test_pi_install_and_uninstall(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = {
+                "PI_CODING_AGENT_DIR": str(root / "pi"),
+                "HERDR_PLUGIN_ROOT": str(Path(__file__).parents[1]),
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(model_display.install_pi(), 0)
+                destination = root / "pi" / "extensions" / "herdr-model-display.ts"
+                self.assertIn('pi.on("model_select"', destination.read_text())
+                self.assertEqual(model_display.uninstall_pi(), 0)
+                self.assertFalse(destination.exists())
+
+    @patch.object(model_display.shutil, "which", return_value=None)
+    def test_hermes_install_and_uninstall(self, _which):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            environment = {
+                "HERMES_HOME": str(root / "hermes"),
+                "HERDR_PLUGIN_ROOT": str(Path(__file__).parents[1]),
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(model_display.install_hermes(), 0)
+                destination = root / "hermes" / "plugins" / "herdr-model-display"
+                self.assertTrue((destination / "plugin.yaml").exists())
+                self.assertEqual(model_display.uninstall_hermes(), 0)
+                self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":

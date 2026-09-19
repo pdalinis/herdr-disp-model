@@ -1,9 +1,14 @@
 id = "dev.pdalinis.model-display"
 name = "Model Display"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.0"
 description = "Display the active model next to the harness name in Herdr."
 platforms = ["linux", "macos"]
+
+[[actions]]
+id = "setup-all"
+title = "Set up all model display adapters"
+command = ["python3", "src/model_display.py", "install-all"]
 
 [[actions]]
 id = "setup-codex"
@@ -11,11 +16,46 @@ title = "Set up Codex model display"
 command = ["python3", "src/model_display.py", "install-codex"]
 
 [[actions]]
+id = "setup-claude"
+title = "Set up Claude model display"
+command = ["python3", "src/model_display.py", "install-claude"]
+
+[[actions]]
+id = "setup-pi"
+title = "Set up Pi model display"
+command = ["python3", "src/model_display.py", "install-pi"]
+
+[[actions]]
+id = "setup-hermes"
+title = "Set up Hermes model display"
+command = ["python3", "src/model_display.py", "install-hermes"]
+
+[[actions]]
 id = "status"
 title = "Check model display setup"
 command = ["python3", "src/model_display.py", "status"]
 
 [[actions]]
+id = "remove-all"
+title = "Remove all model display adapters"
+command = ["python3", "src/model_display.py", "uninstall-all"]
+
+[[actions]]
 id = "remove-codex"
 title = "Remove Codex model display"
 command = ["python3", "src/model_display.py", "uninstall-codex"]
+
+[[actions]]
+id = "remove-claude"
+title = "Remove Claude model display"
+command = ["python3", "src/model_display.py", "uninstall-claude"]
+
+[[actions]]
+id = "remove-pi"
+title = "Remove Pi model display"
+command = ["python3", "src/model_display.py", "uninstall-pi"]
+
+[[actions]]
+id = "remove-hermes"
+title = "Remove Hermes model display"
+command = ["python3", "src/model_display.py", "uninstall-hermes"]

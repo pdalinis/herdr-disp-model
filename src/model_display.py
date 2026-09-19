@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Herdr Model Display plugin and Codex hook adapter."""
+"""Herdr Model Display plugin and harness adapter installer."""
 
 from __future__ import annotations
 
@@ -14,9 +14,10 @@ import sys
 from typing import Any
 
 
-SOURCE = "herdr-model-display:codex"
-MARKER = "herdr-model-display-codex-hook"
-HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
+CODEX_MARKER = "herdr-model-display-codex-hook"
+CODEX_HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
+CLAUDE_MARKER = "herdr-model-display-claude-hook"
+CLAUDE_HOOK_EVENTS = ("SessionStart", "PostModelSwitch", "SessionEnd")
 
 
 def compact_model_name(model: str) -> str:
@@ -52,7 +53,9 @@ def report_model(pane_id: str, harness: str, model: str) -> int:
         "--token",
         f"model={model}",
     ]
-    return subprocess.run(command, check=False).returncode
+    return subprocess.run(
+        command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).returncode
 
 
 def clear_model(pane_id: str, harness: str) -> int:
@@ -69,7 +72,9 @@ def clear_model(pane_id: str, harness: str) -> int:
         "--clear-token",
         "model",
     ]
-    return subprocess.run(command, check=False).returncode
+    return subprocess.run(
+        command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).returncode
 
 
 def codex_hook(payload: dict[str, Any]) -> int:
@@ -87,9 +92,43 @@ def codex_hook(payload: dict[str, Any]) -> int:
     return 0
 
 
+def claude_hook(payload: dict[str, Any]) -> int:
+    pane_id = os.environ.get("HERDR_PANE_ID", "").strip()
+    if not pane_id or payload.get("agent_id"):
+        return 0
+
+    event = str(payload.get("hook_event_name", ""))
+    if event == "SessionEnd":
+        return clear_model(pane_id, "claude")
+
+    model = (
+        payload.get("to_model") if event == "PostModelSwitch" else payload.get("model")
+    )
+    if isinstance(model, str) and model.strip():
+        return report_model(pane_id, "claude", model)
+    return 0
+
+
 def codex_home() -> Path:
     configured = os.environ.get("CODEX_HOME")
     return Path(configured).expanduser() if configured else Path.home() / ".codex"
+
+
+def claude_home() -> Path:
+    configured = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(configured).expanduser() if configured else Path.home() / ".claude"
+
+
+def pi_home() -> Path:
+    configured = os.environ.get("PI_CODING_AGENT_DIR")
+    return (
+        Path(configured).expanduser() if configured else Path.home() / ".pi" / "agent"
+    )
+
+
+def hermes_home() -> Path:
+    configured = os.environ.get("HERMES_HOME")
+    return Path(configured).expanduser() if configured else Path.home() / ".hermes"
 
 
 def plugin_config_dir() -> Path:
@@ -99,18 +138,23 @@ def plugin_config_dir() -> Path:
     return Path.home() / ".config" / "herdr" / "plugins" / "dev.pdalinis.model-display"
 
 
-def hook_command(script_path: Path) -> str:
-    return f"python3 {shlex.quote(str(script_path))} codex-hook # {MARKER}"
+def plugin_root() -> Path:
+    configured = os.environ.get("HERDR_PLUGIN_ROOT")
+    return Path(configured) if configured else Path(__file__).resolve().parents[1]
 
 
-def is_our_hook(group: Any) -> bool:
+def hook_command(script_path: Path, subcommand: str, marker: str) -> str:
+    return f"python3 {shlex.quote(str(script_path))} {subcommand} # {marker}"
+
+
+def is_our_hook(group: Any, marker: str) -> bool:
     if not isinstance(group, dict):
         return False
     hooks = group.get("hooks")
     if not isinstance(hooks, list):
         return False
     return any(
-        isinstance(item, dict) and MARKER in str(item.get("command", ""))
+        isinstance(item, dict) and marker in str(item.get("command", ""))
         for item in hooks
     )
 
@@ -135,14 +179,14 @@ def write_hooks(path: Path, data: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def remove_managed_groups(data: dict[str, Any]) -> bool:
+def remove_managed_groups(data: dict[str, Any], marker: str) -> bool:
     changed = False
     hooks = data.get("hooks", {})
     for event in list(hooks):
         groups = hooks[event]
         if not isinstance(groups, list):
             continue
-        filtered = [group for group in groups if not is_our_hook(group)]
+        filtered = [group for group in groups if not is_our_hook(group, marker)]
         if len(filtered) != len(groups):
             changed = True
             if filtered:
@@ -161,9 +205,9 @@ def install_codex() -> int:
 
     hooks_path = codex_home() / "hooks.json"
     data = load_hooks(hooks_path)
-    remove_managed_groups(data)
-    command = hook_command(destination)
-    for event in HOOK_EVENTS:
+    remove_managed_groups(data, CODEX_MARKER)
+    command = hook_command(destination, "codex-hook", CODEX_MARKER)
+    for event in CODEX_HOOK_EVENTS:
         data["hooks"].setdefault(event, []).append(
             {
                 "hooks": [
@@ -185,7 +229,7 @@ def uninstall_codex() -> int:
     hooks_path = codex_home() / "hooks.json"
     if hooks_path.exists():
         data = load_hooks(hooks_path)
-        if remove_managed_groups(data):
+        if remove_managed_groups(data, CODEX_MARKER):
             write_hooks(hooks_path, data)
 
     adapter = plugin_config_dir() / "codex-hook.py"
@@ -195,18 +239,169 @@ def uninstall_codex() -> int:
     return 0
 
 
+def install_claude() -> int:
+    source = Path(__file__).resolve()
+    destination_dir = plugin_config_dir()
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination = destination_dir / "claude-hook.py"
+    shutil.copy2(source, destination)
+
+    settings_path = claude_home() / "settings.json"
+    data = load_hooks(settings_path)
+    remove_managed_groups(data, CLAUDE_MARKER)
+    command = hook_command(destination, "claude-hook", CLAUDE_MARKER)
+    for event in CLAUDE_HOOK_EVENTS:
+        data["hooks"].setdefault(event, []).append(
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": command,
+                        "timeout": 5,
+                    }
+                ]
+            }
+        )
+    write_hooks(settings_path, data)
+    print(f"Installed Claude hooks in {settings_path}")
+    print("Restart Claude sessions to activate model display.")
+    return 0
+
+
+def uninstall_claude() -> int:
+    settings_path = claude_home() / "settings.json"
+    if settings_path.exists():
+        data = load_hooks(settings_path)
+        if remove_managed_groups(data, CLAUDE_MARKER):
+            write_hooks(settings_path, data)
+
+    adapter = plugin_config_dir() / "claude-hook.py"
+    if adapter.exists():
+        adapter.unlink()
+    print("Removed Claude model-display hooks.")
+    return 0
+
+
+def install_pi() -> int:
+    source = plugin_root() / "adapters" / "pi-model-display.ts"
+    destination = pi_home() / "extensions" / "herdr-model-display.ts"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    print(f"Installed Pi extension at {destination}")
+    print("Run /reload or restart Pi to activate model display.")
+    return 0
+
+
+def uninstall_pi() -> int:
+    destination = pi_home() / "extensions" / "herdr-model-display.ts"
+    if destination.exists():
+        destination.unlink()
+    print("Removed Pi model-display extension.")
+    return 0
+
+
+def install_hermes() -> int:
+    source = plugin_root() / "adapters" / "hermes"
+    destination = hermes_home() / "plugins" / "herdr-model-display"
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
+
+    hermes = shutil.which("hermes")
+    if hermes:
+        result = subprocess.run(
+            [hermes, "plugins", "enable", "herdr-model-display"], check=False
+        )
+        if result.returncode != 0:
+            print(
+                "Hermes plugin was copied but could not be enabled automatically.",
+                file=sys.stderr,
+            )
+            return result.returncode
+    else:
+        print(
+            "Hermes executable not found; enable herdr-model-display after installing Hermes."
+        )
+    print(f"Installed Hermes plugin at {destination}")
+    print("Restart Hermes to activate model display.")
+    return 0
+
+
+def uninstall_hermes() -> int:
+    destination = hermes_home() / "plugins" / "herdr-model-display"
+    hermes = shutil.which("hermes")
+    if hermes and destination.exists():
+        subprocess.run(
+            [hermes, "plugins", "disable", "herdr-model-display"], check=False
+        )
+    if destination.exists():
+        shutil.rmtree(destination)
+    print("Removed Hermes model-display plugin.")
+    return 0
+
+
+def install_all() -> int:
+    results = [install_codex(), install_claude(), install_pi(), install_hermes()]
+    return 0 if all(result == 0 for result in results) else 1
+
+
+def uninstall_all() -> int:
+    results = [
+        uninstall_codex(),
+        uninstall_claude(),
+        uninstall_pi(),
+        uninstall_hermes(),
+    ]
+    return 0 if all(result == 0 for result in results) else 1
+
+
 def status() -> int:
-    hooks_path = codex_home() / "hooks.json"
-    if not hooks_path.exists():
-        print("Codex: not configured")
-        return 1
-    data = load_hooks(hooks_path)
-    configured = all(
-        any(is_our_hook(group) for group in data["hooks"].get(event, []))
-        for event in HOOK_EVENTS
+    checks: list[tuple[str, bool]] = []
+
+    codex_path = codex_home() / "hooks.json"
+    codex_data = load_hooks(codex_path) if codex_path.exists() else {"hooks": {}}
+    checks.append(
+        (
+            "Codex",
+            all(
+                any(
+                    is_our_hook(group, CODEX_MARKER)
+                    for group in codex_data["hooks"].get(event, [])
+                )
+                for event in CODEX_HOOK_EVENTS
+            ),
+        )
     )
-    print(f"Codex: {'configured' if configured else 'not configured'}")
-    return 0 if configured else 1
+
+    claude_path = claude_home() / "settings.json"
+    claude_data = load_hooks(claude_path) if claude_path.exists() else {"hooks": {}}
+    checks.append(
+        (
+            "Claude",
+            all(
+                any(
+                    is_our_hook(group, CLAUDE_MARKER)
+                    for group in claude_data["hooks"].get(event, [])
+                )
+                for event in CLAUDE_HOOK_EVENTS
+            ),
+        )
+    )
+    checks.append(
+        ("Pi", (pi_home() / "extensions" / "herdr-model-display.ts").exists())
+    )
+    checks.append(
+        (
+            "Hermes",
+            (
+                hermes_home() / "plugins" / "herdr-model-display" / "plugin.yaml"
+            ).exists(),
+        )
+    )
+
+    for name, configured in checks:
+        print(f"{name}: {'configured' if configured else 'not configured'}")
+    return 0 if all(configured for _, configured in checks) else 1
 
 
 def read_stdin_payload() -> dict[str, Any]:
@@ -221,17 +416,28 @@ def read_stdin_payload() -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("install-all", help="Install every supported harness adapter")
+    commands.add_parser("uninstall-all", help="Remove every supported harness adapter")
     commands.add_parser("install-codex", help="Install the companion Codex hooks")
     commands.add_parser("uninstall-codex", help="Remove the companion Codex hooks")
+    commands.add_parser("install-claude", help="Install the companion Claude hooks")
+    commands.add_parser("uninstall-claude", help="Remove the companion Claude hooks")
+    commands.add_parser("install-pi", help="Install the Pi extension")
+    commands.add_parser("uninstall-pi", help="Remove the Pi extension")
+    commands.add_parser("install-hermes", help="Install the Hermes plugin")
+    commands.add_parser("uninstall-hermes", help="Remove the Hermes plugin")
     commands.add_parser("status", help="Check adapter installation")
     commands.add_parser("codex-hook", help="Handle a Codex hook payload from stdin")
+    commands.add_parser("claude-hook", help="Handle a Claude hook payload from stdin")
 
     report = commands.add_parser("report", help="Report a model from another adapter")
     report.add_argument("--pane", default=os.environ.get("HERDR_PANE_ID"))
     report.add_argument("--harness", required=True)
     report.add_argument("--model", required=True)
 
-    clear = commands.add_parser("clear", help="Clear a model reported by another adapter")
+    clear = commands.add_parser(
+        "clear", help="Clear a model reported by another adapter"
+    )
     clear.add_argument("--pane", default=os.environ.get("HERDR_PANE_ID"))
     clear.add_argument("--harness", required=True)
     return parser
@@ -239,14 +445,32 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "install-all":
+        return install_all()
+    if args.command == "uninstall-all":
+        return uninstall_all()
     if args.command == "install-codex":
         return install_codex()
     if args.command == "uninstall-codex":
         return uninstall_codex()
+    if args.command == "install-claude":
+        return install_claude()
+    if args.command == "uninstall-claude":
+        return uninstall_claude()
+    if args.command == "install-pi":
+        return install_pi()
+    if args.command == "uninstall-pi":
+        return uninstall_pi()
+    if args.command == "install-hermes":
+        return install_hermes()
+    if args.command == "uninstall-hermes":
+        return uninstall_hermes()
     if args.command == "status":
         return status()
     if args.command == "codex-hook":
         return codex_hook(read_stdin_payload())
+    if args.command == "claude-hook":
+        return claude_hook(read_stdin_payload())
     if args.command == "report":
         if not args.pane:
             raise SystemExit("--pane or HERDR_PANE_ID is required")
